@@ -11,6 +11,6 @@
 #SBATCH --mail-user <your email>    # Email address to send email to
 
 module purge                        # Unload other software modules
-module load module load ccs/conda/python
+module load ccs/conda/python
 
 python MNIST-dataset-analysis.py
