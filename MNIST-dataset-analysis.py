@@ -63,15 +63,14 @@ plt.savefig("pairwaise_dist_norms.png")
 
 
 ## Pairwise W1 distances
-import torch.nn.functional as F
 import numpy as np
-import ot  # from POT
+import matplotlib.pyplot as plt
+from joblib import Parallel, delayed, parallel_backend
+import ot
 
 # ----- SETTINGS -----
 threshold = 0.8          # pixel threshold in [0,1]
-use_sinkhorn = True      # True = faster approximate W1; False = exact EMD
-sinkhorn_reg = 5e-2      # entropic regularization (smaller = closer to exact, slower)
-device = "cpu"           # keep POT on CPU; torch GPU won’t accelerate POT calls directly
+reg = 5e-2               # entropic regularization (smaller => closer to EMD, slower)
 
 # Build distributions (probability vectors)
 def to_prob(img2d, thr=threshold):
@@ -81,7 +80,9 @@ def to_prob(img2d, thr=threshold):
     arr = arr / mass
     return arr.view(-1)
 
+# Each row a probability vector that sums to 1
 A = torch.stack([to_prob(images[i]) for i in range(N)])  # [N, 28*28]
+A_np = A.cpu().numpy().astype(np.float64)  # convert A to numpy
 
 # Ground cost matrix between pixel coordinates
 # Coordinates grid (row, col), Euclidean ground metric
@@ -89,50 +90,46 @@ coords = torch.stack(torch.meshgrid(torch.arange(28), torch.arange(28), indexing
 M = torch.cdist(coords, coords, p=2)  # [28*28, 28*28], Euclidean distances
 M = M.cpu().numpy().astype(np.float64)  # POT expects numpy
 
-# Convert A to numpy
-A_np = A.cpu().numpy().astype(np.float64)  # each row sums to 1
+# Compute distances for row i for j >= i (upper triangle)
+def compute_row(i, A_np, M, reg):
+    ai = A_np[i]
+    row = np.zeros(A_np.shape[0], dtype=np.float64)
+    for j in range(i, A_np.shape[0]):
+        bj = A_np[j]
+        # sinkhorn2 returns the transport cost <T, M> (≈ W1 for metric M)
+        w2 = ot.sinkhorn2(ai, bj, M, reg=reg)
+        row[j] = float(np.array(w2).squeeze())
+    return i, row
 
-# Pairwise W1 distances
+# Parallelize across rows
+# inner_max_num_threads=1 prevents BLAS over-subscription per process
+with parallel_backend("loky", inner_max_num_threads=1):
+    results = Parallel(n_jobs=-1, verbose=1)(
+        delayed(compute_row)(i, A_np, M, reg) for i in range(N)
+    )
+
+# Assemble full symmetric matrix
 D = np.zeros((N, N), dtype=np.float64)
+for i, row in results:
+    D[i, i:] = row[i:]
+    D[i:, i] = row[i:]  # mirror to lower triangle
 
-if use_sinkhorn:
-    # Precompute a small epsilon on diagonal for numerical stability if needed
-    for i in range(N):
-        ai = A_np[i]
-        for j in range(i, N):
-            bj = A_np[j]
-            w2 = ot.sinkhorn2(ai, bj, M, reg=sinkhorn_reg)  # returns transport cost
-            w = float(np.array(w2).squeeze())
-            D[i, j] = w
-            D[j, i] = w
-else:
-    for i in range(N):
-        ai = A_np[i]
-        for j in range(i, N):
-            bj = A_np[j]
-            w = ot.emd2(ai, bj, M)  # exact EMD cost (W1 with our ground metric)
-            D[i, j] = w
-            D[j, i] = w
-
-# Plot heatmap and draw label-group boundaries
-plt.figure(figsize=(7, 7))
+# Plot heatmap
+plt.figure(figsize=(7,7))
 im = plt.imshow(D, interpolation='nearest', aspect='auto')
-plt.title(f"Wasserstein-1 distance (sorted by label)  N={N}, size={28}x{28}\n"
-          + ("Sinkhorn (≈W1, reg={:.3g})".format(sinkhorn_reg) if use_sinkhorn else "Exact EMD"))
+plt.title(f"Wasserstein-1 (Sinkhorn ≈, reg={reg}, parallel)")
 plt.colorbar(im, label="W₁")
 
-# boundaries per digit group
-counts = [(labels == d).sum().item() for d in range(10)]
+# draw label-group boundaries
+counts = [(y == d).sum().item() for d in range(10)]
 cuts = np.cumsum(counts)[:-1]
 for c in cuts:
     plt.axhline(c - 0.5, lw=0.5, color='white')
     plt.axvline(c - 0.5, lw=0.5, color='white')
 
-# tick centers
-centers = []
-start = 0
+centers, start = [], 0
 for cnt in counts:
-    centers.append(start + cnt / 2)
+    centers.append(start + cnt/2)
     start += cnt
 plt.xticks(centers, list(range(10)))
 plt.yticks(centers, list(range(10)))
