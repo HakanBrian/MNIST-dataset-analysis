@@ -12,5 +12,8 @@
 
 module purge                        # Unload other software modules
 module load ccs/conda/python
+module load Miniconda3
+
+source activate myenv
 
 python MNIST-dataset-analysis.py
