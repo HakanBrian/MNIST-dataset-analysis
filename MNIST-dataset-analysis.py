@@ -121,7 +121,7 @@ plt.title(f"Wasserstein-1 (Sinkhorn ≈, reg={reg}, parallel)")
 plt.colorbar(im, label="W₁")
 
 # draw label-group boundaries
-counts = [(y == d).sum().item() for d in range(10)]
+counts = [(labels == d).sum().item() for d in range(10)]
 cuts = np.cumsum(counts)[:-1]
 for c in cuts:
     plt.axhline(c - 0.5, lw=0.5, color='white')
