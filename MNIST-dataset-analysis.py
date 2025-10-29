@@ -64,78 +64,78 @@ plt.savefig("pairwaise_dist_norms.png")
 
 ## Pairwise W1 distances
 import numpy as np
-import matplotlib.pyplot as plt
-from joblib import Parallel, delayed, parallel_backend
+from joblib import Parallel, delayed
 import ot
+from scipy.spatial.distance import cdist
 
-# ----- SETTINGS -----
-threshold = 0.8          # pixel threshold in [0,1]
-reg = 5e-2               # entropic regularization (smaller => closer to EMD, slower)
+H, W = 28, 28
+dtype = np.float64
+thr = 0.30
+reg = 0.1
+num_jobs = -1  # use all cores
 
-# Build distributions (probability vectors)
-def to_prob(img2d, thr=threshold):
-    arr = img2d.clone()
-    arr = torch.where(arr >= thr, arr, torch.zeros_like(arr))
-    mass = arr.sum()
-    arr = arr / mass
-    return arr.view(-1)
+# images: torch.Tensor (N,784) in [0,1]
+X = images.cpu().numpy().astype(dtype)
+N = X.shape[0]
+imgs_2d = X.reshape(N, H, W)
 
-# Each row a probability vector that sums to 1
-A = torch.stack([to_prob(images[i]) for i in range(N)])  # [N, 28*28]
-A_np = A.cpu().numpy().astype(np.float64)  # convert A to numpy
+def to_distribution(img2d, thr=thr):
+    m = (img2d > thr)
+    a = m.astype(dtype).reshape(-1)
+    if a.sum() == 0:
+        a[(H//2)*W + (W//2)] = 1.0
+    a = a / a.sum()
+    return a
 
-# Ground cost matrix between pixel coordinates
-# Coordinates grid (row, col), Euclidean ground metric
-coords = torch.stack(torch.meshgrid(torch.arange(28), torch.arange(28), indexing='ij'), dim=-1).view(-1, 2).float()  # [28*28, 2]
-M = torch.cdist(coords, coords, p=2)  # [28*28, 28*28], Euclidean distances
-M = M.cpu().numpy().astype(np.float64)  # POT expects numpy
+A = np.stack([to_distribution(im) for im in imgs_2d], axis=0)   # (N, 784)
 
-# Compute distances for row i for j >= i (upper triangle)
-def compute_row(i, A_np, M, reg):
-    ai = A_np[i]
-    row = np.zeros(A_np.shape[0], dtype=np.float64)
-    for j in range(i, A_np.shape[0]):
-        bj = A_np[j]
-        # sinkhorn2 returns the transport cost <T, M> (≈ W1 for metric M)
-        w2 = ot.sinkhorn2(ai, bj, M, reg=reg)
-        row[j] = float(np.array(w2).squeeze())
+# Ground cost on grid
+ys, xs = np.mgrid[0:H, 0:W].reshape(2, -1)
+XY = np.stack([ys, xs], axis=1).astype(dtype)
+M = cdist(XY, XY, metric='euclidean').astype(dtype)
+
+# scale cost
+M /= M.max()              # put distances in [0,1]
+
+# Pick a stabilized solver
+def w1_sinkhorn_stable(a, b, M, reg):
+    cost = ot.sinkhorn2(a, b, M, reg,
+                        method='sinkhorn_stabilized',
+                        numItermax=2000, stopThr=1e-7)
+    return float(cost)
+
+def w1_row(i):
+    ai = A[i]
+    row = np.zeros(N, dtype=dtype)
+    for j in range(i+1, N):  # upper triangle only
+        bj = A[j]
+        try:
+            d = w1_sinkhorn_stable(ai, bj, M, reg)
+        except Exception:
+            d = ot.emd2(ai, bj, M)
+        row[j] = d
     return i, row
 
-# Parallelize across rows
-# inner_max_num_threads=1 prevents BLAS over-subscription per process
-with parallel_backend("loky", inner_max_num_threads=1):
-    results = Parallel(n_jobs=-1, verbose=1)(
-        delayed(compute_row)(i, A_np, M, reg) for i in range(N)
-    )
+# run rows in parallel, then assemble and symmetrize
+pairs = Parallel(n_jobs=num_jobs, prefer="processes", batch_size="auto")(
+    delayed(w1_row)(i) for i in range(N)
+)
 
-# Assemble full symmetric matrix
-D = np.zeros((N, N), dtype=np.float64)
-for i, row in results:
-    D[i, i:] = row[i:]
-    D[i:, i] = row[i:]  # mirror to lower triangle
+W1 = np.zeros((N, N), dtype=dtype)
+for i, row in pairs:
+    W1[i, :] = row
 
-# Plot heatmap
-plt.figure(figsize=(7,7))
-im = plt.imshow(D, interpolation='nearest', aspect='auto')
-plt.title(f"Wasserstein-1 (Sinkhorn ≈, reg={reg}, parallel)")
-plt.colorbar(im, label="W₁")
+iu, ju = np.triu_indices(N, k=1)
+W1[ju, iu] = W1[iu, ju]           # mirror to lower triangle
 
-# draw label-group boundaries
-counts = [(labels == d).sum().item() for d in range(10)]
-cuts = np.cumsum(counts)[:-1]
-for c in cuts:
-    plt.axhline(c - 0.5, lw=0.5, color='white')
-    plt.axvline(c - 0.5, lw=0.5, color='white')
-
-centers, start = [], 0
-for cnt in counts:
-    centers.append(start + cnt/2)
-    start += cnt
-plt.xticks(centers, list(range(10)))
-plt.yticks(centers, list(range(10)))
-
+plt.figure(figsize=(6, 5))
+plt.imshow(W1, cmap="viridis", interpolation="nearest")
+plt.title("Pairwise W1 Distance Heatmap")
+plt.xlabel("Image Index")
+plt.ylabel("Image Index")
+plt.colorbar(label="W1 Distance")
 plt.tight_layout()
-plt.savefig("pairwise_dist_W1")
+plt.show()
 
 
 ## SVD
