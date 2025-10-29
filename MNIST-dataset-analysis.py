@@ -135,7 +135,7 @@ plt.xlabel("Image Index")
 plt.ylabel("Image Index")
 plt.colorbar(label="W1 Distance")
 plt.tight_layout()
-plt.show()
+plt.savefig("pairwise_dist_W1")
 
 
 ## SVD
