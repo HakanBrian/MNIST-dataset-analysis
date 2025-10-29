@@ -57,7 +57,7 @@ for ax, D, title in zip(axes, dists, titles):
     ax.set_xticklabels(list(range(10)))
     ax.set_yticklabels(list(range(10)))
 
-plt.suptitle("Pairwise Distances Between MNIST Images (Sorted by Label)")
+plt.suptitle("Pairwise Distances (Sorted by Label)")
 plt.tight_layout()
 plt.savefig("pairwaise_dist_norms.png")
 
@@ -128,12 +128,38 @@ for i, row in pairs:
 iu, ju = np.triu_indices(N, k=1)
 W1[ju, iu] = W1[iu, ju]           # mirror to lower triangle
 
-plt.figure(figsize=(6, 5))
-plt.imshow(W1, cmap="viridis", interpolation="nearest")
-plt.title("Pairwise W1 Distance Heatmap")
-plt.xlabel("Image Index")
-plt.ylabel("Image Index")
-plt.colorbar(label="W1 Distance")
+fig, ax = plt.subplots(1, 1, figsize=(6, 5))
+im = ax.imshow(W1, interpolation='nearest', aspect='auto', cmap='viridis')
+ax.set_title(r"W$_1$")
+
+# colorbar identical style
+plt.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
+
+# Compute counts of each digit (assuming sorted by label)
+counts = [(labels == d).sum().item() for d in range(10)]
+cuts = torch.tensor(counts).cumsum(0).tolist()[:-1]
+
+# Draw boundaries between digit groups
+for c in cuts:
+    ax.axhline(c - 0.5, linewidth=0.5, color='white')
+    ax.axvline(c - 0.5, linewidth=0.5, color='white')
+
+# Compute tick centers
+centers = []
+start = 0
+for cnt in counts:
+    centers.append(start + cnt / 2)
+    start += cnt
+
+ax.set_xticks(centers)
+ax.set_yticks(centers)
+ax.set_xticklabels(list(range(10)))
+ax.set_yticklabels(list(range(10)))
+
+ax.set_xlabel("Image Index")
+ax.set_ylabel("Image Index")
+
+plt.suptitle("Pairwise W$_1$ Distances (Sorted by Label)")
 plt.tight_layout()
 plt.savefig("pairwise_dist_W1")
 
